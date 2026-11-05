@@ -1,10 +1,10 @@
 services:
-  my-s3:
+  nexvors3:
     build:
       context: .
       dockerfile: Dockerfile
-    image: my-s3:latest
-    container_name: my-s3-server
+    image: nexvors3:latest
+    container_name: nexvor-s3-server
     restart: unless-stopped
     ports:
       - "9000:9000"  # S3 API endpoint
@@ -17,8 +17,8 @@ services:
       - SECRET_KEY=minioadmin
       - ALLOW_ANON=true
     volumes:
-      - my_s3_data:/data
+      - nexvor_s3_data:/data
 
 volumes:
-  my_s3_data:
+  nexvor_s3_data:
     driver: local

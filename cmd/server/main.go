@@ -65,13 +65,13 @@ func main() {
 
 	// Banner
 	fmt.Print(`
-  __  __         _____ ____  
- |  \/  |_   _  / ____|___ \ 
- | |\/| | | | | \___ \ __) | 
- | |  | | |_| |  ___) / __/  
- |_|  |_|\__, | |____/_____| 
-          __/ |              
-         |___/   High-Performance S3-Compatible Object Store
+  _   _                                _____ ____  
+ | \ | | _____  ___   _____  _ __     / ____|___ \ 
+ |  \| |/ _ \ \/ /\ \ / / _ \| '__|   \___ \ __) | 
+ | |\  |  __/>  <  \ V / (_) | |       ___) / __/  
+ |_| \_|\___/_/\_\  \_/ \___/|_|      |____/_____| 
+                                                   
+  NexvorS3 by NexvorCodeLabs | High-Performance Object Store
 `)
 	fmt.Printf(" [✓] S3 API Endpoint:      http://localhost:%s\n", *s3Port)
 	fmt.Printf(" [✓] Web Console UI:       http://localhost:%s\n", *consolePort)
