@@ -1,0 +1,22 @@
+# Binaries & executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+my-s3.exe
+
+# Test & runtime data directories
+data/
+ram-test/
+test-live-data/
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary and log files
+*.tmp
+*.log

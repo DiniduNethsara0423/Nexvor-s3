@@ -1,0 +1,24 @@
+services:
+  my-s3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: my-s3:latest
+    container_name: my-s3-server
+    restart: unless-stopped
+    ports:
+      - "9000:9000"  # S3 API endpoint
+      - "9001:9001"  # Web Console UI
+    environment:
+      - S3_PORT=9000
+      - CONSOLE_PORT=9001
+      - DATA_DIR=/data
+      - ACCESS_KEY=minioadmin
+      - SECRET_KEY=minioadmin
+      - ALLOW_ANON=true
+    volumes:
+      - my_s3_data:/data
+
+volumes:
+  my_s3_data:
+    driver: local
