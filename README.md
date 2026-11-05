@@ -1,7 +1,13 @@
 # NexvorS3: Ultra-Fast S3-Compatible Storage Engine
-**By NexvorCodeLabs** | High-Performance Object Storage & Database Reliability Engine
+**By NexvorCodeLabs** | High-Performance Object Storage & Database Reliability Engine  
+**Website**: [nexvorcodelabs.me](https://nexvorcodelabs.me) | **Launch Status**: [View Launch Announcement](LAUNCH_ANNOUNCEMENT.md)
 
-A lightweight, enterprise-ready, single-binary S3-compatible object storage engine with an embedded Web Management Console. Built from scratch in pure Go by **NexvorCodeLabs** with zero external dependencies and 100% clean-room intellectual property (Apache 2.0 / MIT commercial friendly).
+> 🚀 **Public Launch Coming Soon!** We are preparing the official public release. Visit [nexvorcodelabs.me](https://nexvorcodelabs.me) to get in touch with our team for early pilot access.
+
+---
+
+## 🎬 Native HLS (`.m3u8`) & Multi-Resolution Video
+NexvorS3 natively supports **Apple HLS (`.m3u8`) playlists** and **`.ts` video segments** with automatic RFC 8216 MIME header mapping and HTTP 206 byte-range seeking. Stream adaptive **1080p, 720p, 480p, and 360p** video to iOS, Android, and web players with zero buffering.
 
 ---
 
