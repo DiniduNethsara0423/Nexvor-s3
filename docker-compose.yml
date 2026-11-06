@@ -13,8 +13,8 @@ services:
       - S3_PORT=9000
       - CONSOLE_PORT=9001
       - DATA_DIR=/data
-      - ACCESS_KEY=minioadmin
-      - SECRET_KEY=minioadmin
+      - NEXVOR_ROOT_USER=minioadmin     # Set your custom username / Access Key here
+      - NEXVOR_ROOT_PASSWORD=minioadmin # Set your custom password / Secret Key here
       - ALLOW_ANON=true
     volumes:
       - nexvor_s3_data:/data

@@ -193,3 +193,36 @@ func TestHLSStreamingAndMime(t *testing.T) {
 		t.Errorf("expected video/mp2t MIME type for .ts, got: %s", tsContentType)
 	}
 }
+
+func TestBrowserRedirectToConsole(t *testing.T) {
+	handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 1. Browser GET / with Accept: text/html
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Host = "localhost:9000"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 Temporary Redirect for browser visit, got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "9001") {
+		t.Errorf("expected redirect location to point to port 9001, got: %s", loc)
+	}
+
+	// 2. Normal S3 API GET / (e.g. AWS SDK or XML consumer)
+	reqAPI := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqAPI.Header.Set("Accept", "application/xml")
+	wAPI := httptest.NewRecorder()
+	handler.ServeHTTP(wAPI, reqAPI)
+
+	if wAPI.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for standard S3 ListBuckets, got %d", wAPI.Code)
+	}
+	if !strings.Contains(wAPI.Body.String(), "<ListAllMyBucketsResult") {
+		t.Errorf("expected XML ListAllMyBucketsResult, got: %s", wAPI.Body.String())
+	}
+}

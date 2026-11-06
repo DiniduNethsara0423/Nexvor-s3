@@ -24,12 +24,21 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func getEnvAny(keys []string, fallback string) string {
+	for _, k := range keys {
+		if val := os.Getenv(k); val != "" {
+			return val
+		}
+	}
+	return fallback
+}
+
 func main() {
 	s3Port := flag.String("port", getEnv("S3_PORT", "9000"), "Port for S3 REST API")
 	consolePort := flag.String("console-port", getEnv("CONSOLE_PORT", "9001"), "Port for Web Console UI")
 	dataDir := flag.String("data", getEnv("DATA_DIR", "./data"), "Directory to store bucket data")
-	accessKey := flag.String("access-key", getEnv("ACCESS_KEY", "minioadmin"), "S3 Root Access Key")
-	secretKey := flag.String("secret-key", getEnv("SECRET_KEY", "minioadmin"), "S3 Root Secret Key")
+	accessKey := flag.String("access-key", getEnvAny([]string{"NEXVOR_ROOT_USER", "MINIO_ROOT_USER", "AWS_ACCESS_KEY_ID", "ACCESS_KEY"}, "minioadmin"), "S3 Root Access Key / Username")
+	secretKey := flag.String("secret-key", getEnvAny([]string{"NEXVOR_ROOT_PASSWORD", "MINIO_ROOT_PASSWORD", "AWS_SECRET_ACCESS_KEY", "SECRET_KEY"}, "minioadmin"), "S3 Root Secret Key / Password")
 	allowAnon := flag.Bool("allow-anon", true, "Allow anonymous reads and unauthenticated dev requests")
 	webhookURL := flag.String("webhook", getEnv("WEBHOOK_URL", ""), "Webhook URL for S3 ObjectCreated events (e.g. video transcode)")
 	flag.Parse()
@@ -44,7 +53,7 @@ func main() {
 	authenticator := auth.NewAuthenticator(*accessKey, *secretKey, *allowAnon)
 
 	// 3. S3 API Server (Hardened against Slowloris & DoS attacks)
-	s3Handler := api.NewS3Handler(diskEngine, authenticator, *webhookURL)
+	s3Handler := api.NewS3Handler(diskEngine, authenticator, *webhookURL, *consolePort)
 	s3Server := &http.Server{
 		Addr:              ":" + *s3Port,
 		Handler:           s3Handler,
@@ -54,7 +63,7 @@ func main() {
 	}
 
 	// 4. Web Console UI Server
-	consoleHandler := web.NewConsoleHandler(diskEngine)
+	consoleHandler := web.NewConsoleHandler(diskEngine, *accessKey, *secretKey, *s3Port)
 	consoleServer := &http.Server{
 		Addr:              ":" + *consolePort,
 		Handler:           consoleHandler,

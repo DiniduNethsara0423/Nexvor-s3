@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NexvorS3 — Video Upload & Range Streaming Test</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-border: #1f2937;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --accent: #8b5cf6;
+      --text: #f9fafb;
+      --text-muted: #9ca3af;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); min-height: 100vh; padding: 2rem 1rem; }
+    .container { max-width: 1050px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.5rem; }
+    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--card-border); padding-bottom: 1.25rem; }
+    .logo-group { display: flex; align-items: center; gap: 0.75rem; }
+    .badge { background: #1e3a8a; color: #93c5fd; padding: 0.2rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #9ca3af; display: inline-block; margin-right: 6px; }
+    .status-online { background: var(--success); box-shadow: 0 0 10px var(--success); }
+    .status-offline { background: #ef4444; }
+    
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 850px) { .grid { grid-template-columns: 1fr; } }
+    
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 0.75rem; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+    .card-title { font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+    
+    .dropzone { border: 2px dashed #374151; border-radius: 0.5rem; padding: 2.5rem 1rem; text-align: center; cursor: pointer; transition: all 0.2s; background: rgba(17, 24, 39, 0.4); }
+    .dropzone:hover, .dropzone.dragover { border-color: var(--primary); background: rgba(59, 130, 246, 0.08); }
+    .dropzone p { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.5rem; }
+    input[type="file"] { display: none; }
+    
+    .btn { background: var(--primary); color: white; border: none; padding: 0.6rem 1.2rem; border-radius: 0.375rem; cursor: pointer; font-weight: 500; font-size: 0.9rem; transition: background 0.15s; }
+    .btn:hover { background: var(--primary-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    
+    .progress-wrap { display: none; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+    .progress-bar-bg { width: 100%; height: 8px; background: #374151; border-radius: 9999px; overflow: hidden; }
+    .progress-bar-fill { height: 100%; width: 0%; background: var(--primary); transition: width 0.1s; }
+    .progress-text { font-size: 0.8rem; color: var(--text-muted); display: flex; justify-content: space-between; }
+    
+    /* Video Player */
+    .player-wrap { width: 100%; background: #000; border-radius: 0.5rem; overflow: hidden; aspect-ratio: 16/9; position: relative; display: flex; align-items: center; justify-content: center; }
+    video { width: 100%; height: 100%; object-fit: contain; }
+    .video-placeholder { color: var(--text-muted); font-size: 0.9rem; text-align: center; }
+    
+    .meta-box { background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); border-radius: 0.375rem; padding: 0.75rem; font-size: 0.8rem; display: flex; flex-direction: column; gap: 0.4rem; font-family: monospace; }
+    .meta-row { display: flex; justify-content: space-between; word-break: break-all; }
+    .meta-row span:first-child { color: var(--text-muted); min-width: 110px; }
+    .meta-row span:last-child { color: #60a5fa; }
+    
+    .video-list { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; max-height: 200px; overflow-y: auto; }
+    .video-item { background: #1f2937; padding: 0.6rem 0.85rem; border-radius: 0.375rem; display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; cursor: pointer; transition: background 0.15s; }
+    .video-item:hover { background: #374151; }
+    .video-item.active { background: #1e3a8a; border: 1px solid var(--primary); }
+    
+    .tag-206 { background: #064e3b; color: #34d399; padding: 0.15rem 0.45rem; border-radius: 4px; font-size: 0.7rem; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo-group">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242M12 12v9m-4-4 4 4 4-4"/></svg>
+        <h1 style="font-size: 1.35rem;">NexvorS3 — Video Streaming Studio</h1>
+        <span class="badge">RFC 7233 Range Test</span>
+      </div>
+      <div style="font-size: 0.85rem; display: flex; align-items: center;">
+        <span id="connDot" class="status-dot"></span>
+        <span id="connText">Checking Storage Server...</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- Upload Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>1. Upload Video to NexvorS3</span>
+          <span style="font-size: 0.75rem; color: var(--text-muted);">Bucket: <strong>videos</strong></span>
+        </div>
+
+        <div class="dropzone" id="dropZone" onclick="document.getElementById('videoInput').click()">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="1.5" style="margin-bottom: 0.5rem;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+          <div style="font-weight: 500;">Click to select or drag video here</div>
+          <p>Supports MP4, WebM, MOV, MKV (Any resolution: 1080p, 720p, 480p, 360p)</p>
+          <input type="file" id="videoInput" accept="video/*" onchange="handleFileSelect(event)" />
+        </div>
+
+        <div class="progress-wrap" id="progressWrap">
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="progressBar"></div>
+          </div>
+          <div class="progress-text">
+            <span id="uploadStatus">Uploading...</span>
+            <span id="uploadPct">0%</span>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">Stored Videos in Bucket</div>
+          <ul class="video-list" id="videoList">
+            <li style="color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 1rem 0;">No videos uploaded yet. Upload one above!</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Player Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>2. Live HTTP 206 Byte-Range Streaming</span>
+          <span class="tag-206" id="statusBadge">READY</span>
+        </div>
+
+        <div class="player-wrap">
+          <div class="video-placeholder" id="placeholder">Upload or click a video to start stream</div>
+          <video id="videoPlayer" controls playsinline style="display: none;"></video>
+        </div>
+
+        <div class="meta-box" id="streamMeta">
+          <div class="meta-row"><span>Stream URL:</span><span id="metaUrl">—</span></div>
+          <div class="meta-row"><span>Protocol:</span><span id="metaProtocol">HTTP/1.1 Range (RFC 7233)</span></div>
+          <div class="meta-row"><span>Content-Type:</span><span id="metaType">—</span></div>
+          <div class="meta-row"><span>ETag (MD5):</span><span id="metaEtag">—</span></div>
+          <div class="meta-row"><span>Scrubbing / Seek:</span><span id="metaSeek" style="color: #34d399;">Instant Zero-Buffering Seek Enabled</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const S3_ENDPOINT = 'http://localhost:9000';
+    const BUCKET = 'videos';
+    let currentVideoKey = null;
+
+    // Check Server Connection
+    async function checkHealth() {
+      const dot = document.getElementById('connDot');
+      const text = document.getElementById('connText');
+      try {
+        const res = await fetch(S3_ENDPOINT + '/healthz');
+        if (res.ok) {
+          dot.className = 'status-dot status-online';
+          text.textContent = 'NexvorS3 Online (:9000)';
+          ensureBucketExists();
+          loadVideos();
+        } else {
+          throw new Error();
+        }
+      } catch (err) {
+        dot.className = 'status-dot status-offline';
+        text.textContent = 'NexvorS3 Offline (Start Server)';
+      }
+    }
+
+    async function ensureBucketExists() {
+      try {
+        await fetch(S3_ENDPOINT + '/' + BUCKET, { method: 'PUT' });
+      } catch (e) {}
+    }
+
+    // Drag & Drop
+    const dropZone = document.getElementById('dropZone');
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) {
+        uploadFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    function handleFileSelect(e) {
+      if (e.target.files.length > 0) {
+        uploadFile(e.target.files[0]);
+      }
+    }
+
+    // Upload with progress
+    function uploadFile(file) {
+      const progressWrap = document.getElementById('progressWrap');
+      const progressBar = document.getElementById('progressBar');
+      const uploadPct = document.getElementById('uploadPct');
+      const uploadStatus = document.getElementById('uploadStatus');
+
+      progressWrap.style.display = 'flex';
+      progressBar.style.width = '0%';
+      uploadPct.textContent = '0%';
+      uploadStatus.textContent = 'Streaming ' + file.name + ' (' + formatBytes(file.size) + ')...';
+
+      const key = encodeURIComponent(file.name.replace(/[^a-zA-Z0-9._-]/g, '_'));
+      const uploadUrl = S3_ENDPOINT + '/' + BUCKET + '/' + key;
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', uploadUrl, true);
+      xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          progressBar.style.width = pct + '%';
+          uploadPct.textContent = pct + '%';
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          uploadStatus.textContent = 'Upload Complete!';
+          const etag = xhr.getResponseHeader('ETag') || 'Verified';
+          setTimeout(() => {
+            progressWrap.style.display = 'none';
+            loadVideos();
+            playVideo(key, etag, file.type || 'video/mp4');
+          }, 600);
+        } else {
+          uploadStatus.textContent = 'Upload failed: ' + xhr.statusText;
+        }
+      };
+
+      xhr.onerror = () => {
+        uploadStatus.textContent = 'Network error during upload';
+      };
+
+      xhr.send(file);
+    }
+
+    // Load videos
+    async function loadVideos() {
+      try {
+        const res = await fetch(S3_ENDPOINT + '/' + BUCKET);
+        const xmlText = await res.text();
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+        const contents = xmlDoc.getElementsByTagName('Contents');
+        const list = document.getElementById('videoList');
+        list.innerHTML = '';
+
+        if (contents.length === 0) {
+          list.innerHTML = '<li style="color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 1rem 0;">No videos uploaded yet. Upload one above!</li>';
+          return;
+        }
+
+        for (let i = 0; i < contents.length; i++) {
+          const key = contents[i].getElementsByTagName('Key')[0]?.textContent;
+          const size = contents[i].getElementsByTagName('Size')[0]?.textContent;
+          const etag = contents[i].getElementsByTagName('ETag')[0]?.textContent || '';
+
+          const li = document.createElement('li');
+          li.className = 'video-item' + (currentVideoKey === key ? ' active' : '');
+          li.innerHTML = '<span>🎬 <strong>' + escapeHtml(key) + '</strong> (' + formatBytes(parseInt(size)) + ')</span><button class="btn" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;">Play</button>';
+          li.onclick = () => playVideo(key, etag, 'video/mp4');
+          list.appendChild(li);
+        }
+      } catch (err) {
+        console.error('Failed to load videos:', err);
+      }
+    }
+
+    // Play video with Range streaming
+    function playVideo(key, etag, mimeType) {
+      currentVideoKey = key;
+      const player = document.getElementById('videoPlayer');
+      const placeholder = document.getElementById('placeholder');
+      const statusBadge = document.getElementById('statusBadge');
+      const streamUrl = S3_ENDPOINT + '/' + BUCKET + '/' + key;
+
+      placeholder.style.display = 'none';
+      player.style.display = 'block';
+      player.src = streamUrl;
+      player.load();
+      player.play().catch(() => {});
+
+      statusBadge.textContent = 'HTTP 206 STREAMING';
+      statusBadge.style.background = '#064e3b';
+      statusBadge.style.color = '#34d399';
+
+      document.getElementById('metaUrl').textContent = streamUrl;
+      document.getElementById('metaType').textContent = mimeType || 'video/mp4';
+      document.getElementById('metaEtag').textContent = etag || 'Verified (MD5 checksum)';
+
+      // Highlight in list
+      const items = document.querySelectorAll('.video-item');
+      items.forEach(el => el.classList.remove('active'));
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    checkHealth();
+    setInterval(checkHealth, 3000);
+  </script>
+</body>
+</html>

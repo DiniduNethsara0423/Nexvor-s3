@@ -33,17 +33,23 @@ func init() {
 
 // S3Handler handles incoming S3 REST protocol requests
 type S3Handler struct {
-	storage    *storage.DiskEngine
-	auth       *auth.Authenticator
-	webhookURL string
+	storage     *storage.DiskEngine
+	auth        *auth.Authenticator
+	webhookURL  string
+	consolePort string
 }
 
 // NewS3Handler constructs a new S3Handler with optional MinIO-style webhook notifications
-func NewS3Handler(storage *storage.DiskEngine, auth *auth.Authenticator, webhookURL string) *S3Handler {
+func NewS3Handler(storage *storage.DiskEngine, auth *auth.Authenticator, webhookURL string, consolePort ...string) *S3Handler {
+	cp := "9001"
+	if len(consolePort) > 0 && consolePort[0] != "" {
+		cp = consolePort[0]
+	}
 	return &S3Handler{
-		storage:    storage,
-		auth:       auth,
-		webhookURL: webhookURL,
+		storage:     storage,
+		auth:        auth,
+		webhookURL:  webhookURL,
+		consolePort: cp,
 	}
 }
 
@@ -99,6 +105,21 @@ func (h *S3Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if path == "" {
 		if r.Method == http.MethodGet {
+			// If request is from a web browser visiting root, redirect to the MinIO-style Console UI
+			accept := r.Header.Get("Accept")
+			if strings.Contains(accept, "text/html") && r.Header.Get("Authorization") == "" {
+				host := r.Host
+				if idx := strings.Index(host, ":"); idx != -1 {
+					host = host[:idx]
+				}
+				proto := "http"
+				if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+					proto = "https"
+				}
+				target := fmt.Sprintf("%s://%s:%s", proto, host, h.consolePort)
+				http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+				return
+			}
 			h.handleListBuckets(w, r)
 			return
 		}
