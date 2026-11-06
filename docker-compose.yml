@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: nexvors3:latest
+    image: dinidun/nexvors3:latest
     container_name: nexvor-s3-server
     restart: unless-stopped
     ports:

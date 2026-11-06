@@ -30,7 +30,12 @@ NexvorS3 natively supports **Apple HLS (`.m3u8`) playlists** and **`.ts` video s
 
 ## 🚀 Quick Start
 
-### 1. Run with Docker Compose
+### 1. Run Instantly from Docker Hub
+```bash
+docker run -d --name nexvor-s3 -p 9000:9000 -p 9001:9001 -v nexvor_data:/data dinidun/nexvors3:latest
+```
+
+### 2. Run with Docker Compose
 ```bash
 docker compose up -d
 ```
@@ -39,7 +44,7 @@ docker compose up -d
 * **Default Access Key**: `minioadmin`
 * **Default Secret Key**: `minioadmin`
 
-### 2. Run Directly with Go
+### 3. Run Directly with Go
 ```bash
 # Build
 go build -o my-s3.exe ./cmd/server
