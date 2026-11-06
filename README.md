@@ -1,6 +1,8 @@
 # NexvorS3: Ultra-Fast S3-Compatible Storage Engine
 **By NexvorCodeLabs** | High-Performance Object Storage & Database Reliability Engine  
-**Website**: [nexvorcodelabs.me](https://nexvorcodelabs.me) | **Launch Status**: [View Launch Announcement](LAUNCH_ANNOUNCEMENT.md)
+**Website**: [nexvorcodelabs.me](https://nexvorcodelabs.me) | **Launch Status**: [View Launch Announcement](LAUNCH_ANNOUNCEMENT.md)  
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Docker Image](https://img.shields.io/badge/Docker_Hub-dinidun%2Fnexvors3-blue?logo=docker)](https://hub.docker.com/r/dinidun/nexvors3)
 
 > 🚀 **Public Launch Coming Soon!** We are preparing the official public release. Visit [nexvorcodelabs.me](https://nexvorcodelabs.me) to get in touch with our team for early pilot access.
 
@@ -144,5 +146,8 @@ my-s3/
 
 ---
 
-## ⚖️ Legal & Commercial License
-`my-s3` is implemented clean-room from the public AWS S3 protocol specifications. It contains no AGPLv3 or GPL code. You are free to compile, customize, package, host as a SaaS, or sell commercially without licensing restrictions.
+## ⚖️ License
+NexvorS3 is open-source software licensed under the **[Apache License 2.0](LICENSE)**.
+
+* Clean-room implementation from public S3 specifications (zero AGPLv3/GPL copyleft contamination).
+* You are 100% free to compile, modify, embed in proprietary products, host as a SaaS, or distribute commercially.
