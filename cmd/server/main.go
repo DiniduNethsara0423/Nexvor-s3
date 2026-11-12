@@ -8,11 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"my-s3/internal/api"
 	"my-s3/internal/auth"
+	"my-s3/internal/erasure"
+	"my-s3/internal/replication"
 	"my-s3/internal/storage"
 	"my-s3/internal/web"
 )
@@ -33,14 +37,34 @@ func getEnvAny(keys []string, fallback string) string {
 	return fallback
 }
 
+func getEnvBool(key string, fallback bool) bool {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+	return val == "true" || val == "1" || val == "TRUE"
+}
+
 func main() {
 	s3Port := flag.String("port", getEnv("S3_PORT", "9000"), "Port for S3 REST API")
 	consolePort := flag.String("console-port", getEnv("CONSOLE_PORT", "9001"), "Port for Web Console UI")
 	dataDir := flag.String("data", getEnv("DATA_DIR", "./data"), "Directory to store bucket data")
 	accessKey := flag.String("access-key", getEnvAny([]string{"NEXVOR_ROOT_USER", "MINIO_ROOT_USER", "AWS_ACCESS_KEY_ID", "ACCESS_KEY"}, "minioadmin"), "S3 Root Access Key / Username")
 	secretKey := flag.String("secret-key", getEnvAny([]string{"NEXVOR_ROOT_PASSWORD", "MINIO_ROOT_PASSWORD", "AWS_SECRET_ACCESS_KEY", "SECRET_KEY"}, "minioadmin"), "S3 Root Secret Key / Password")
-	allowAnon := flag.Bool("allow-anon", true, "Allow anonymous reads and unauthenticated dev requests")
+	allowAnon := flag.Bool("allow-anon", getEnvBool("ALLOW_ANON", true), "Allow anonymous reads/unauthenticated dev requests (set false for strict SigV4)")
 	webhookURL := flag.String("webhook", getEnv("WEBHOOK_URL", ""), "Webhook URL for S3 ObjectCreated events (e.g. video transcode)")
+	repTarget := flag.String("replication-target", getEnv("REPLICATION_TARGET_ENDPOINT", ""), "Target S3 endpoint URL for native async cross-site replication")
+	repAccess := flag.String("replication-access-key", getEnv("REPLICATION_ACCESS_KEY", ""), "Access key for replication target (defaults to root access key)")
+	repSecret := flag.String("replication-secret-key", getEnv("REPLICATION_SECRET_KEY", ""), "Secret key for replication target (defaults to root secret key)")
+	repRegion := flag.String("replication-region", getEnv("REPLICATION_REGION", "us-east-1"), "Region for replication target")
+	kmsKey := flag.String("kms-key", getEnv("NEXVOR_KMS_KEY", ""), "Master secret key for transparent SSE-S3/KMS AES-256-GCM encryption at rest")
+	erasureDrives := flag.String("erasure-drives", getEnv("ERASURE_DRIVES", ""), "Comma-separated drive paths for GF(2^8) Reed-Solomon Erasure Coding (e.g. /d1,/d2,/d3,/d4)")
+	erasureParity := flag.Int("erasure-parity", func() int {
+		if p, err := strconv.Atoi(getEnv("ERASURE_PARITY", "2")); err == nil && p > 0 {
+			return p
+		}
+		return 2
+	}(), "Number of Reed-Solomon parity shards (default 2)")
 	flag.Parse()
 
 	// 1. Initialize Storage Engine
@@ -48,12 +72,52 @@ func main() {
 	if err != nil {
 		log.Fatalf("Fatal: failed to initialize storage engine: %v", err)
 	}
+	if *kmsKey != "" {
+		diskEngine.SetMasterKMSKey(*kmsKey)
+	}
+	if *erasureDrives != "" {
+		var drives []string
+		for _, d := range strings.Split(*erasureDrives, ",") {
+			if trimmed := strings.TrimSpace(d); trimmed != "" {
+				drives = append(drives, trimmed)
+			}
+		}
+		dataShards := len(drives) - *erasureParity
+		if dataShards > 0 {
+			ecStore, ecErr := erasure.NewMultiDriveStore(drives, dataShards, *erasureParity)
+			if ecErr != nil {
+				log.Fatalf("Fatal: invalid erasure coding setup: %v", ecErr)
+			}
+			diskEngine.SetErasureStore(ecStore)
+			log.Printf("[✓] Erasure Coding Enabled: %d data + %d parity drives (tolerates %d simultaneous drive failures)", dataShards, *erasureParity, *erasureParity)
+		}
+	}
 
 	// 2. Initialize Authentication
 	authenticator := auth.NewAuthenticator(*accessKey, *secretKey, *allowAnon)
 
-	// 3. S3 API Server (Hardened against Slowloris & DoS attacks)
+	// 3. Initialize Native Asynchronous Cross-Site Replicator (if target endpoint configured)
+	repAK := *repAccess
+	if repAK == "" {
+		repAK = *accessKey
+	}
+	repSK := *repSecret
+	if repSK == "" {
+		repSK = *secretKey
+	}
+	repCtx, repCancel := context.WithCancel(context.Background())
+	defer repCancel()
+	replicator := replication.NewReplicator(diskEngine, *repTarget, repAK, repSK, *repRegion)
+	if replicator != nil {
+		replicator.Start(repCtx, 4)
+	}
+
+	diskEngine.StartLifecycleSweeper(repCtx, time.Hour)
+
+	// 4. S3 API Server (Hardened against Slowloris & DoS attacks)
 	s3Handler := api.NewS3Handler(diskEngine, authenticator, *webhookURL, *consolePort)
+	s3Handler.SetReplicator(replicator)
+	s3Handler.SetPolicyEngine(auth.NewPolicyEngine(*dataDir))
 	s3Server := &http.Server{
 		Addr:              ":" + *s3Port,
 		Handler:           s3Handler,
@@ -86,7 +150,10 @@ func main() {
 	fmt.Printf(" [✓] Web Console UI:       http://localhost:%s\n", *consolePort)
 	fmt.Printf(" [✓] Data Directory:       %s\n", *dataDir)
 	fmt.Printf(" [✓] Access Key:           %s\n", *accessKey)
-	fmt.Printf(" [✓] Secret Key:           %s\n", *secretKey)
+	fmt.Printf(" [✓] Strict SigV4 Mode:    %v\n", !*allowAnon)
+	if *repTarget != "" {
+		fmt.Printf(" [✓] Async Replication ->  %s\n", *repTarget)
+	}
 	fmt.Println(" -------------------------------------------------------------")
 
 	// Start servers

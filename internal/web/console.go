@@ -1,26 +1,36 @@
 package web
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"my-s3/internal/auth"
 	"my-s3/internal/storage"
 )
 
-// ConsoleHandler serves the MinIO-style Web Management UI
+// ConsoleHandler serves the MinIO-style Web Management UI with HMAC-SHA256 session authentication
 type ConsoleHandler struct {
-	storage   *storage.DiskEngine
-	accessKey string
-	secretKey string
-	s3Port    string
+	storage       *storage.DiskEngine
+	accessKey     string
+	secretKey     string
+	s3Port        string
+	sessionSecret []byte
 }
 
-// NewConsoleHandler returns a new ConsoleHandler with credential and port support
+// NewConsoleHandler returns a new ConsoleHandler with credential, port, and random HMAC session secret
 func NewConsoleHandler(storage *storage.DiskEngine, opts ...string) *ConsoleHandler {
 	accessKey := "minioadmin"
 	secretKey := "minioadmin"
@@ -34,18 +44,77 @@ func NewConsoleHandler(storage *storage.DiskEngine, opts ...string) *ConsoleHand
 	if len(opts) > 2 && opts[2] != "" {
 		s3Port = opts[2]
 	}
+	sec := make([]byte, 32)
+	_, _ = rand.Read(sec)
 	return &ConsoleHandler{
-		storage:   storage,
-		accessKey: accessKey,
-		secretKey: secretKey,
-		s3Port:    s3Port,
+		storage:       storage,
+		accessKey:     accessKey,
+		secretKey:     secretKey,
+		s3Port:        s3Port,
+		sessionSecret: sec,
 	}
+}
+
+func (c *ConsoleHandler) issueSessionToken(username string) string {
+	exp := time.Now().UTC().Add(24 * time.Hour).Unix()
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%s|%d", username, exp)))
+	mac := hmac.New(sha256.New, c.sessionSecret)
+	mac.Write([]byte(payload))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return payload + "." + sig
+}
+
+func (c *ConsoleHandler) verifySessionToken(token string) bool {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, c.sessionSecret)
+	mac.Write([]byte(parts[0]))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+	if subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expectedSig)) != 1 {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	fields := strings.Split(string(raw), "|")
+	if len(fields) != 2 {
+		return false
+	}
+	exp, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || time.Now().UTC().Unix() > exp {
+		return false
+	}
+	return true
+}
+
+func (c *ConsoleHandler) authenticateSession(r *http.Request) bool {
+	if authHdr := r.Header.Get("Authorization"); strings.HasPrefix(authHdr, "Bearer ") {
+		if c.verifySessionToken(strings.TrimPrefix(authHdr, "Bearer ")) {
+			return true
+		}
+	}
+	if cookie, err := r.Cookie("nexvor_session"); err == nil && cookie.Value != "" {
+		if c.verifySessionToken(cookie.Value) {
+			return true
+		}
+	}
+	if qTok := r.URL.Query().Get("token"); qTok != "" {
+		if c.verifySessionToken(qTok) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ConsoleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
@@ -56,6 +125,7 @@ func (c *ConsoleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// API endpoints for the console UI
 	if strings.HasPrefix(path, "api/") {
+		w.Header().Set("Cache-Control", "no-store")
 		c.handleAPI(w, r, strings.TrimPrefix(path, "api/"))
 		return
 	}
@@ -73,23 +143,38 @@ type BucketSummary struct {
 	TotalSize    int64     `json:"total_size"`
 }
 
+func ioLimitBody(r *http.Request) io.Reader {
+	return io.LimitReader(r.Body, 1<<20)
+}
+
 func (c *ConsoleHandler) handleAPI(w http.ResponseWriter, r *http.Request, endpoint string) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// 1. Authentication Check & Login
+	// 1. Authentication Login & Logout (public endpoints)
 	if endpoint == "login" && r.Method == http.MethodPost {
 		var creds struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		if err := json.NewDecoder(ioLimitBody(r)).Decode(&creds); err != nil {
 			http.Error(w, `{"error":"invalid request format"}`, http.StatusBadRequest)
 			return
 		}
-		if creds.Username == c.accessKey && creds.Password == c.secretKey {
+		userOK := subtle.ConstantTimeCompare([]byte(creds.Username), []byte(c.accessKey)) == 1
+		passOK := subtle.ConstantTimeCompare([]byte(creds.Password), []byte(c.secretKey)) == 1
+		if userOK && passOK {
+			tok := c.issueSessionToken(creds.Username)
+			http.SetCookie(w, &http.Cookie{
+				Name:     "nexvor_session",
+				Value:    tok,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+				MaxAge:   86400,
+			})
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":   "ok",
-				"token":    "nexvor-auth-token-valid",
+				"token":    tok,
 				"username": creds.Username,
 				"s3Port":   c.s3Port,
 			})
@@ -100,11 +185,59 @@ func (c *ConsoleHandler) handleAPI(w http.ResponseWriter, r *http.Request, endpo
 		return
 	}
 
+	if endpoint == "logout" && r.Method == http.MethodPost {
+		http.SetCookie(w, &http.Cookie{Name: "nexvor_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
+		return
+	}
+
+	// Enforce authenticated HMAC session on ALL remaining Console API endpoints!
+	if !c.authenticateSession(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "authentication required"})
+		return
+	}
+
 	if endpoint == "session" && r.Method == http.MethodGet {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"authenticated": true,
 			"username":      c.accessKey,
 			"s3Port":        c.s3Port,
+		})
+		return
+	}
+
+	// Presigned Expiring S3 URL Generator (SigV4)
+	if endpoint == "presign" && r.Method == http.MethodPost {
+		var body struct {
+			Bucket  string `json:"bucket"`
+			Key     string `json:"key"`
+			Expires int64  `json:"expires_seconds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Bucket == "" || body.Key == "" {
+			http.Error(w, `{"error":"bucket and key are required"}`, http.StatusBadRequest)
+			return
+		}
+		if body.Expires <= 0 {
+			body.Expires = 86400 // Default 24 hours
+		}
+		host := r.Host
+		if idx := strings.IndexByte(host, ':'); idx != -1 {
+			host = host[:idx]
+		}
+		proto := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			proto = "https"
+		}
+		s3Endpoint := fmt.Sprintf("%s://%s:%s", proto, host, c.s3Port)
+		signedURL, err := auth.GeneratePresignedURL(s3Endpoint, body.Bucket, body.Key, c.accessKey, c.secretKey, "us-east-1", http.MethodGet, body.Expires)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"url":        signedURL,
+			"expires_in": body.Expires,
 		})
 		return
 	}
@@ -702,7 +835,22 @@ const htmlConsole = `<!DOCTYPE html>
       }
     }
 
+    function getToken() { return localStorage.getItem('nexvor_session') || ''; }
+
+    async function apiFetch(url, options = {}) {
+      const hdrs = Object.assign({}, options.headers || {});
+      const tok = getToken();
+      if (tok) hdrs['Authorization'] = 'Bearer ' + tok;
+      const res = await fetch(url, Object.assign({}, options, { headers: hdrs }));
+      if (res.status === 401) {
+        localStorage.removeItem('nexvor_session');
+        document.getElementById('loginOverlay').style.display = 'flex';
+      }
+      return res;
+    }
+
     function logout() {
+      apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
       localStorage.removeItem('nexvor_session');
       localStorage.removeItem('nexvor_user');
       location.reload();
@@ -715,7 +863,7 @@ const htmlConsole = `<!DOCTYPE html>
 
     async function loadStats() {
       try {
-        const res = await fetch('/api/stats');
+        const res = await apiFetch('/api/stats');
         if (res.ok) {
           const stats = await res.json();
           document.getElementById('statBuckets').textContent = stats.buckets_count || 0;
@@ -728,7 +876,7 @@ const htmlConsole = `<!DOCTYPE html>
 
     async function loadBuckets() {
       try {
-        const res = await fetch('/api/buckets');
+        const res = await apiFetch('/api/buckets');
         if (res.ok) {
           allBuckets = await res.json() || [];
           renderBucketList();
@@ -787,7 +935,7 @@ const htmlConsole = `<!DOCTYPE html>
     async function loadObjects() {
       if (!currentBucket) return;
       try {
-        const res = await fetch('/api/buckets/' + encodeURIComponent(currentBucket) + '/objects');
+        const res = await apiFetch('/api/buckets/' + encodeURIComponent(currentBucket) + '/objects');
         if (res.ok) {
           currentObjects = await res.json() || [];
           renderObjectList();
@@ -827,7 +975,7 @@ const htmlConsole = `<!DOCTYPE html>
           '<td>' + new Date(obj.last_modified).toLocaleString() + '</td>' +
           '<td style="text-align: right;">' +
             '<button class="btn btn-outline action-btn" style="margin-right: 0.35rem;" onclick="openPreview(\'' + escapeJs(obj.key) + '\', \'' + escapeJs(obj.content_type) + '\', ' + obj.size + ')">👁️ Preview</button>' +
-            '<a href="/api/buckets/' + encodeURIComponent(currentBucket) + '/download?key=' + encodedKey + '" class="btn btn-secondary action-btn" style="text-decoration:none; margin-right: 0.35rem;" download>⬇️ Download</a>' +
+            '<a href="/api/buckets/' + encodeURIComponent(currentBucket) + '/download?key=' + encodedKey + '&token=' + encodeURIComponent(getToken()) + '" class="btn btn-secondary action-btn" style="text-decoration:none; margin-right: 0.35rem;" download>⬇️ Download</a>' +
             '<button class="btn btn-outline action-btn" style="margin-right: 0.35rem;" onclick="copyToClipboard(\'' + s3Url + '\', \'S3 URL\')">📋 URL</button>' +
             '<button class="btn btn-danger action-btn" onclick="deleteObject(\'' + escapeJs(obj.key) + '\')">🗑️</button>' +
           '</td>';
@@ -896,6 +1044,7 @@ const htmlConsole = `<!DOCTYPE html>
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/buckets/' + encodeURIComponent(currentBucket) + '/objects');
+      if (getToken()) xhr.setRequestHeader('Authorization', 'Bearer ' + getToken());
 
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
@@ -938,7 +1087,7 @@ const htmlConsole = `<!DOCTYPE html>
       const name = document.getElementById('newBucketNameInput').value.trim();
       if (!name) return;
       try {
-        const res = await fetch('/api/buckets', {
+        const res = await apiFetch('/api/buckets', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name })
@@ -960,7 +1109,7 @@ const htmlConsole = `<!DOCTYPE html>
       if (!currentBucket) return;
       if (!confirm('Are you sure you want to delete bucket "' + currentBucket + '"?\nIt must be completely empty first.')) return;
       try {
-        const res = await fetch('/api/buckets/' + encodeURIComponent(currentBucket), { method: 'DELETE' });
+        const res = await apiFetch('/api/buckets/' + encodeURIComponent(currentBucket), { method: 'DELETE' });
         if (res.ok) {
           currentBucket = null;
           document.getElementById('bucketView').style.display = 'none';
@@ -978,7 +1127,7 @@ const htmlConsole = `<!DOCTYPE html>
     async function deleteObject(key) {
       if (!confirm('Delete object "' + key + '" permanently?')) return;
       try {
-        const res = await fetch('/api/buckets/' + encodeURIComponent(currentBucket) + '/objects/' + encodeURIComponent(key), {
+        const res = await apiFetch('/api/buckets/' + encodeURIComponent(currentBucket) + '/objects/' + encodeURIComponent(key), {
           method: 'DELETE'
         });
         if (res.ok) {
@@ -999,8 +1148,9 @@ const htmlConsole = `<!DOCTYPE html>
       const downloadBtn = document.getElementById('previewDownloadBtn');
 
       const encodedKey = encodeURIComponent(key);
-      const viewUrl = '/api/buckets/' + encodeURIComponent(currentBucket) + '/view?key=' + encodedKey;
-      const downloadUrl = '/api/buckets/' + encodeURIComponent(currentBucket) + '/download?key=' + encodedKey;
+      const tokParam = '&token=' + encodeURIComponent(getToken());
+      const viewUrl = '/api/buckets/' + encodeURIComponent(currentBucket) + '/view?key=' + encodedKey + tokParam;
+      const downloadUrl = '/api/buckets/' + encodeURIComponent(currentBucket) + '/download?key=' + encodedKey + tokParam;
       previewUrl = 'http://localhost:9000/' + encodeURIComponent(currentBucket) + '/' + encodeURI(key);
 
       title.textContent = key;
@@ -1032,7 +1182,7 @@ const htmlConsole = `<!DOCTYPE html>
         pre.className = 'preview-text';
         pre.textContent = 'Loading text preview...';
         container.appendChild(pre);
-        fetch(viewUrl)
+        apiFetch('/api/buckets/' + encodeURIComponent(currentBucket) + '/view?key=' + encodedKey)
           .then(r => r.text())
           .then(t => { pre.textContent = t.slice(0, 10000); })
           .catch(() => { pre.textContent = 'Binary file (preview unavailable). Download above to view.'; });
@@ -1053,7 +1203,7 @@ const htmlConsole = `<!DOCTYPE html>
 
     function exportBucketBackup() {
       if (!currentBucket) return;
-      window.open('/api/buckets/' + encodeURIComponent(currentBucket) + '/export', '_blank');
+      window.open('/api/buckets/' + encodeURIComponent(currentBucket) + '/export?token=' + encodeURIComponent(getToken()), '_blank');
     }
 
     function copyToClipboard(text, label) {

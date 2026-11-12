@@ -15,7 +15,10 @@ services:
       - DATA_DIR=/data
       - NEXVOR_ROOT_USER=minioadmin     # Set your custom username / Access Key here
       - NEXVOR_ROOT_PASSWORD=minioadmin # Set your custom password / Secret Key here
-      - ALLOW_ANON=true
+      - ALLOW_ANON=true                 # Set to false in production to enforce strict AWS SigV4 (AWS4-HMAC-SHA256)
+      - REPLICATION_TARGET_ENDPOINT=    # Optional: e.g. http://local-k3s-s3:9000 for native async cross-site replication
+      - REPLICATION_ACCESS_KEY=
+      - REPLICATION_SECRET_KEY=
     volumes:
       - nexvor_s3_data:/data
 
